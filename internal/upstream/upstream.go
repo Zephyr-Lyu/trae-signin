@@ -43,6 +43,8 @@ func New() *Client {
 	}
 }
 
+// doJSON 发送请求并读取响应体。
+// TRAE 可能用 HTTP 200 + body.code 表达业务失败，因此必须同时检查业务码。
 func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
@@ -52,6 +54,22 @@ func (c *Client) doJSON(req *http.Request) (json.RawMessage, error) {
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("http %d: %s", resp.StatusCode, truncate(string(raw), 200))
+	}
+
+	var probe struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if len(raw) > 0 {
+		if jerr := json.Unmarshal(raw, &probe); jerr == nil {
+			if probe.Code != 0 && probe.Code != 200 {
+				msg := strings.TrimSpace(probe.Message)
+				if msg == "" {
+					msg = fmt.Sprintf("code %d", probe.Code)
+				}
+				return nil, fmt.Errorf("code %d: %s", probe.Code, truncate(msg, 300))
+			}
+		}
 	}
 	return raw, nil
 }
@@ -187,12 +205,16 @@ func ugHeaders(req *http.Request, a *auth.Auth) {
 	if a.DeviceID != "" {
 		req.Header.Set("X-Device-Id", a.DeviceID)
 	}
+	if a.MachineID != "" {
+		req.Header.Set("X-Machine-Id", a.MachineID)
+	}
 }
 
 func truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
-	if len(s) > n {
-		return s[:n]
+	r := []rune(s)
+	if len(r) > n {
+		return string(r[:n])
 	}
 	return s
 }
