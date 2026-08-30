@@ -74,8 +74,10 @@ func main() {
 			fmt.Printf("   ✅ token 刷新成功\n")
 		}
 
-		// 签到
-		checkedIn, _, enable, serr := up.CheckinStatus(a)
+		// 签到：先查状态，领取后必须再次查询确认 checked_in=true，
+		// 避免上游接口仅返回 HTTP 2xx 时被误判为签到成功。
+		checkedIn, creditsBefore, enable, serr := up.CheckinStatus(a)
+		fmt.Printf("🔎 %s 签到前: checked_in=%v credits=%d enable=%v\n", r.uid, checkedIn, creditsBefore, enable)
 		switch {
 		case serr != nil:
 			if isAlready(serr.Error()) {
@@ -101,12 +103,27 @@ func main() {
 				r.detail = short(err.Error())
 				failN++
 			} else {
-				r.status = "✅ OK"
-				okN++
+				// 给上游极短时间落库后再次确认。
+				time.Sleep(800 * time.Millisecond)
+				verified, creditsAfter, enableAfter, verr := up.CheckinStatus(a)
+				fmt.Printf("🔎 %s 签到后: checked_in=%v credits=%d enable=%v err=%v\n", r.uid, verified, creditsAfter, enableAfter, verr)
+				if verr != nil {
+					r.status = "FAIL"
+					r.detail = "claim 2xx but verify error: " + short(verr.Error())
+					failN++
+				} else if !verified {
+					r.status = "FAIL"
+					r.detail = fmt.Sprintf("claim 2xx but checked_in=false (%d→%d)", creditsBefore, creditsAfter)
+					failN++
+				} else {
+					r.status = "✅ OK"
+					r.detail = fmt.Sprintf("verified (%d→%d)", creditsBefore, creditsAfter)
+					okN++
+				}
 			}
 		}
 
-		// 查积分
+		// 查积分/额度
 		if remain, qerr := up.UserEntUsage(a); qerr == nil {
 			r.remain, r.hasRem = remain, true
 		}
@@ -129,6 +146,10 @@ func main() {
 	fmt.Println("└──────────────────────────────────────┴───────────────┴──────────────┴──────────┴──────────────────────────────────────┘")
 	fmt.Println()
 	fmt.Printf("📊 总计=%d  签到成功=%d  已签=%d  禁用=%d  失败=%d\n", len(rows), okN, alreadyN, disabledN, failN)
+
+	if failN > 0 {
+		os.Exit(1)
+	}
 }
 
 func isAlready(msg string) bool {
